@@ -129,36 +129,95 @@ func (tm *TargetManager) runTarget(ctx context.Context, tc TargetConfig, interva
 	}
 }
 
-// runICMPTarget runs an infinite ICMP ping loop using pro-bing.
+// runICMPTarget measures ICMP latency with bounded one-shot pro-bing runs.
 func (tm *TargetManager) runICMPTarget(ctx context.Context, tc TargetConfig, interval time.Duration, mt *managedTarget) {
-	pinger, err := probing.NewPinger(tc.Address)
-	if err != nil {
-		slog.Error("failed to create ICMP pinger", "address", tc.Address, "err", err)
-		return
-	}
-	pinger.SetPrivileged(tm.privileged)
-	pinger.Interval = interval
-	pinger.Count = 0 // infinite
+	var (
+		totalSent int
+		totalRecv int
+		minRtt    = time.Duration(math.MaxInt64)
+		maxRtt    time.Duration
+		meanNs    float64
+		m2Ns      float64
+	)
 
-	pinger.OnRecv = func(_ *probing.Packet) {
-		s := pinger.Statistics()
+	stddev := func() time.Duration {
+		if totalRecv < 2 {
+			return 0
+		}
+		return time.Duration(math.Sqrt(m2Ns / float64(totalRecv-1)))
+	}
+
+	probe := func() {
+		totalSent++
+
+		var rtt time.Duration
+		received := false
+
+		pinger := probing.New(tc.Address)
+		pinger.SetPrivileged(tm.privileged)
+		pinger.Interval = interval
+		pinger.Count = 1
+		pinger.Timeout = interval
+		pinger.ResolveTimeout = interval
+		pinger.RecordRtts = false
+		pinger.RecordTTLs = false
+		pinger.OnRecv = func(pkt *probing.Packet) {
+			rtt = pkt.Rtt
+			received = true
+		}
+
+		if err := pinger.RunWithContext(ctx); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			slog.Debug("icmp probe failed", "address", tc.Address, "err", err)
+		}
+
+		if received {
+			totalRecv++
+			if rtt < minRtt {
+				minRtt = rtt
+			}
+			if rtt > maxRtt {
+				maxRtt = rtt
+			}
+			n := float64(totalRecv)
+			delta := float64(rtt) - meanNs
+			meanNs += delta / n
+			m2Ns += delta * (float64(rtt) - meanNs)
+		}
+
+		rttMin := minRtt
+		if totalRecv == 0 {
+			rttMin = 0
+		}
+
 		snap := &TargetStats{
 			Address:     tc.Address,
 			Alias:       tc.Alias,
 			Method:      "icmp",
-			MinRtt:      s.MinRtt,
-			MaxRtt:      s.MaxRtt,
-			AvgRtt:      s.AvgRtt,
-			StdDevRtt:   s.StdDevRtt,
-			PacketLoss:  s.PacketLoss / 100.0,
-			PacketsSent: s.PacketsSent,
-			PacketsRecv: s.PacketsRecv,
+			MinRtt:      rttMin,
+			MaxRtt:      maxRtt,
+			AvgRtt:      time.Duration(meanNs),
+			StdDevRtt:   stddev(),
+			PacketLoss:  float64(totalSent-totalRecv) / float64(totalSent),
+			PacketsSent: totalSent,
+			PacketsRecv: totalRecv,
 		}
 		mt.stats.Store(snap)
 	}
 
-	if err := pinger.RunWithContext(ctx); err != nil && ctx.Err() == nil {
-		slog.Error("ICMP pinger exited unexpectedly", "address", tc.Address, "err", err)
+	probe()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probe()
+		}
 	}
 }
 
