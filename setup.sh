@@ -13,7 +13,7 @@
 # Optional:
 #   --listen-addr   <addr>  HTTP listen address (default: :9427)
 #   --poll-interval <dur>   Config poll interval (default: 30s)
-#   --install-dir   <dir>   Directory to install binary (default: /usr/local/bin)
+#   --web-config    <path>  basic_auth_users YAML (optional; LoadCredential)
 #   --help                  Show this message and exit.
 #
 # Privileges:
@@ -35,6 +35,7 @@ CONFIG_URL=""
 LISTEN_ADDR=":9427"
 POLL_INTERVAL="30s"
 INSTALL_DIR="/usr/local/bin"
+WEB_CONFIG=""
 
 usage() {
   grep '^#' "$0" | grep -v '#!/' | sed 's/^# \{0,1\}//'
@@ -48,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --listen-addr)    LISTEN_ADDR="$2";    shift 2 ;;
     --poll-interval)  POLL_INTERVAL="$2";  shift 2 ;;
     --install-dir)    INSTALL_DIR="$2";    shift 2 ;;
+    --web-config)     WEB_CONFIG="$2";     shift 2 ;;
     --help|-h)        usage ;;
     *) error "Unknown argument: $1.  Run with --help for usage." ;;
   esac
@@ -96,6 +98,16 @@ info "Binary installed to: ${BINARY}"
 #   without setcap or root. Requires NoNewPrivileges=true to be effective.
 # CapabilityBoundingSet=CAP_NET_RAW — drop all other capabilities.
 
+LOAD_CRED=""
+WEB_FLAG=""
+if [[ -n "${WEB_CONFIG}" ]]; then
+  if [[ ! -f "${WEB_CONFIG}" ]]; then
+    error "--web-config file not found: ${WEB_CONFIG}"
+  fi
+  LOAD_CRED="LoadCredential=web.yml:${WEB_CONFIG}"$'\n'
+  WEB_FLAG=$' \\\n  --web.config.file=/run/credentials/ping-exporter.service/web.yml'
+fi
+
 UNIT_FILE="/etc/systemd/system/ping-exporter.service"
 cat > "${UNIT_FILE}" <<EOF
 [Unit]
@@ -110,11 +122,11 @@ DynamicUser=yes
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
 NoNewPrivileges=true
-ExecStart=${BINARY} \\
+${LOAD_CRED}ExecStart=${BINARY} \\
   --config.url=${CONFIG_URL} \\
   --config.poll-interval=${POLL_INTERVAL} \\
   --web.listen-address=${LISTEN_ADDR} \\
-  --ping.privileged=true
+  --ping.privileged=true${WEB_FLAG}
 Restart=on-failure
 RestartSec=5s
 ProtectSystem=strict

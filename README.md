@@ -58,8 +58,8 @@ The exporter polls a JSON URL for its configuration:
 --config.url <url>              Remote config URL (required)
 --config.poll-interval <dur>    Poll interval for remote config (default: 30s)
 --web.listen-address <addr>     Metrics listen address (default: :9427)
+--web.config.file <path>        Prometheus web YAML; enables basic auth. Empty disables it
 --ping.privileged <bool>        Use raw ICMP sockets; requires CAP_NET_RAW (default: true)
---log.level <level>             debug | info | warn | error (default: info)
 ```
 
 ## Building
@@ -87,6 +87,7 @@ Optional flags:
 ```
 --listen-addr   <addr>   HTTP listen address (default: :9427)
 --poll-interval <dur>    Config poll interval (default: 30s)
+--web-config    <path>   basic_auth_users YAML, passed to the service via LoadCredential
 --install-dir   <dir>    Binary install directory (default: /usr/local/bin)
 ```
 

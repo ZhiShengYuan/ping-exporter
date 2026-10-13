@@ -21,6 +21,7 @@ func main() {
 	listenAddr := flag.String("web.listen-address", ":9427", "Address on which to expose metrics")
 	privileged := flag.Bool("ping.privileged", true, "Use privileged raw ICMP sockets (requires root or CAP_NET_RAW)")
 	logLevel := flag.String("log.level", "info", "Log level (debug, info, warn, error)")
+	webConfigFile := flag.String("web.config.file", "", "Path to Prometheus web YAML with basic_auth_users; empty disables basic auth")
 	flag.Parse()
 
 	if *configURL == "" {
@@ -68,6 +69,15 @@ func main() {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(NewPingCollector(tm))
 
+	auth, err := loadWebConfig(*webConfigFile)
+	if err != nil {
+		slog.Error("loading web config", "err", err)
+		os.Exit(1)
+	}
+	if auth.enabled() {
+		slog.Info("basic auth enabled", "users", len(auth.BasicAuthUsers))
+	}
+
 	// HTTP server.
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", wl.Wrap(promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg})))
@@ -77,7 +87,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    *listenAddr,
-		Handler: mux,
+		Handler: auth.wrap(mux),
 	}
 
 	go func() {
